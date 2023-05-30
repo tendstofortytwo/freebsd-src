@@ -234,9 +234,6 @@ setpfsync_syncpeer(const char *val, int d, int s, const struct afswtch *rafp)
 		struct sockaddr_in *sin = (struct sockaddr_in *)
 					      peerres->ai_addr;
 
-		if (IN_MULTICAST(ntohl(sin->sin_addr.s_addr)))
-			errx(1, "syncpeer address cannot be multicast");
-
 		memcpy(&addr, sin, sizeof(*sin));
 		break;
 	}
@@ -245,9 +242,6 @@ setpfsync_syncpeer(const char *val, int d, int s, const struct afswtch *rafp)
 	case AF_INET6: {
 		struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)
 					      peerres->ai_addr;
-
-		if (IN6_IS_ADDR_MULTICAST(&sin6->sin6_addr))
-			errx(1, "syncpeer address cannot be multicast");
 
 		memcpy(&addr, sin6, sizeof(*sin6));
 		break;

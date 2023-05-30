@@ -335,6 +335,9 @@ static struct pfsync_bucket	*pfsync_get_bucket(struct pfsync_softc *,
 VNET_DEFINE(struct if_clone *, pfsync_cloner);
 #define	V_pfsync_cloner	VNET(pfsync_cloner)
 
+const struct in6_addr in6addr_linklocal_pfsync_group =
+	{{{ 0xff, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf0 }}};
 static int
 pfsync_clone_create(struct if_clone *ifc, int unit, caddr_t param)
 {
@@ -2534,6 +2537,7 @@ pfsync_multicast_setup(struct pfsync_softc *sc, struct ifnet *ifp)
 	int error;
 	struct in_mfilter *imf = NULL;
 	struct in6_mfilter *im6f = NULL;
+	struct sockaddr_in6 *syncpeer_sa6 = NULL;
 
 	if (!(ifp->if_flags & IFF_MULTICAST))
 		return (EADDRNOTAVAIL);
@@ -2562,12 +2566,13 @@ pfsync_multicast_setup(struct pfsync_softc *sc, struct ifnet *ifp)
 #ifdef INET6
 	case AF_INET6:
 	    {
-		if ((error = in6_setscope(&((struct sockaddr_in6 *)&sc->sc_sync_peer)->sin6_addr, ifp, NULL))) {
+		syncpeer_sa6 = (struct sockaddr_in6 *)&sc->sc_sync_peer;
+		if ((error = in6_setscope(&syncpeer_sa6->sin6_addr, ifp, NULL))) {
 			return (error);
 		}
 		im6f = ip6_mfilter_alloc(M_WAITOK, 0, 0);
 		ip6_mfilter_init(&im6o->im6o_head);
-		if ((error = in6_joingroup(ifp, &((struct sockaddr_in6 *)&sc->sc_sync_peer)->sin6_addr, NULL,
+		if ((error = in6_joingroup(ifp, &syncpeer_sa6->sin6_addr, NULL,
 			&(im6f->im6f_in6m), 0)))
 		{
 			ip6_mfilter_free(im6f);
@@ -2748,11 +2753,9 @@ pfsync_kstatus_to_softc(struct pfsync_kstatus *status, struct pfsync_softc *sc)
 
 	if (
 	    ((sc->sc_sync_peer.ss_family == AF_INET) &&
-	    (((struct sockaddr_in *)&sc->sc_sync_peer)->sin_addr.s_addr ==
-		htonl(INADDR_PFSYNC_GROUP))) ||
+	     IN_MULTICAST(ntohl(((struct sockaddr_in *)&sc->sc_sync_peer)->sin_addr.s_addr))) ||
 	    ((sc->sc_sync_peer.ss_family == AF_INET6) &&
-	     (IN6_ARE_ADDR_EQUAL(&((struct sockaddr_in6 *)&sc->sc_sync_peer)->sin6_addr,
-	        &in6addr_linklocal_pfsync_group)))
+	     IN6_IS_ADDR_MULTICAST(&((struct sockaddr_in6*)&sc->sc_sync_peer)->sin6_addr))
 	) {
 		error = pfsync_multicast_setup(sc, sifp);
 		if (error) {
@@ -2893,12 +2896,12 @@ pfsync_init(void)
 	if (error)
 		return (error);
 #endif
-	/* XXX: What if the register function below errors out? Should we
-	 * somehow cleanup the above registration? */
 #ifdef INET6
 	error = ip6proto_register(IPPROTO_PFSYNC, pfsync6_input, NULL);
-	if (error)
+	if (error) {
+		ipproto_unregister(IPPROTO_PFSYNC);
 		return (error);
+	}
 #endif
 
 	return (0);

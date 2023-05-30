@@ -139,8 +139,6 @@ const struct in6_addr in6addr_linklocal_allrouters =
 	IN6ADDR_LINKLOCAL_ALLROUTERS_INIT;
 const struct in6_addr in6addr_linklocal_allv2routers =
 	IN6ADDR_LINKLOCAL_ALLV2ROUTERS_INIT;
-const struct in6_addr in6addr_linklocal_pfsync_group =
-	IN6ADDR_LINKLOCAL_PFSYNC_GROUP_INIT;
 
 const struct in6_addr in6mask0 = IN6MASK0;
 const struct in6_addr in6mask32 = IN6MASK32;

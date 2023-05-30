@@ -787,12 +787,14 @@ basic_ipv6_body()
 	jexec one ifconfig ${epair_one}a inet6 fc2b::1/64 up
 	jexec one ifconfig pfsync0 \
 		syncdev ${epair_sync}a \
+		syncpeer ff12::f0 \
 		maxupd 1 \
 		up
 	jexec two ifconfig ${epair_two}a inet6 fc2b::2/64 up
 	jexec two ifconfig ${epair_sync}b inet6 fc2c::2/64 up
 	jexec two ifconfig pfsync0 \
 		syncdev ${epair_sync}b \
+		syncpeer ff12::f0 \
 		maxupd 1 \
 		up
 

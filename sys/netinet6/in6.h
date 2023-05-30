@@ -206,9 +206,6 @@ extern const struct in6_addr in6mask128;
 #define IN6ADDR_LINKLOCAL_ALLV2ROUTERS_INIT \
 	{{{ 0xff, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
 	    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x16 }}}
-#define IN6ADDR_LINKLOCAL_PFSYNC_GROUP_INIT \
-	{{{ 0xff, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
-	    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf0 }}}
 #endif
 
 extern const struct in6_addr in6addr_any;
@@ -218,7 +215,6 @@ extern const struct in6_addr in6addr_nodelocal_allnodes;
 extern const struct in6_addr in6addr_linklocal_allnodes;
 extern const struct in6_addr in6addr_linklocal_allrouters;
 extern const struct in6_addr in6addr_linklocal_allv2routers;
-extern const struct in6_addr in6addr_linklocal_pfsync_group;
 #endif
 
 /*
