@@ -97,6 +97,7 @@ __FBSDID("$FreeBSD$");
 #include <netinet/if_ether.h>
 #include <netinet/in.h>
 #include <netinet/in_var.h>
+#include <netinet6/in6_var.h>
 #include <netinet/ip.h>
 #include <netinet/ip6.h>
 #include <netinet/ip_carp.h>
@@ -107,6 +108,7 @@ __FBSDID("$FreeBSD$");
 
 #include <netinet/ip6.h>
 #include <netinet6/ip6_var.h>
+#include <netinet6/scope6_var.h>
 
 #include <netpfil/pf/pfsync_nv.h>
 
@@ -218,6 +220,7 @@ struct pfsync_softc {
 	struct ifnet		*sc_ifp;
 	struct ifnet		*sc_sync_if;
 	struct ip_moptions	sc_imo;
+	struct ip6_moptions	sc_im6o;
 	struct sockaddr_storage	sc_sync_peer;
 	uint32_t		sc_flags;
 	uint8_t			sc_maxupdates;
@@ -268,8 +271,7 @@ static void	pfsync_timeout(void *);
 static void	pfsync_push(struct pfsync_bucket *);
 static void	pfsync_push_all(struct pfsync_softc *);
 static void	pfsyncintr(void *);
-static int	pfsync_multicast_setup(struct pfsync_softc *, struct ifnet *,
-		    struct in_mfilter *imf);
+static int	pfsync_multicast_setup(struct pfsync_softc *, struct ifnet *);
 static void	pfsync_multicast_cleanup(struct pfsync_softc *);
 static void	pfsync_pointers_init(void);
 static void	pfsync_pointers_uninit(void);
@@ -2476,10 +2478,8 @@ pfsync_tx(struct pfsync_softc *sc, struct mbuf *m)
 			error = ip6_output(m, NULL, NULL, 0,
 			    NULL, NULL, NULL);
 		} else {
-			/* XXX: the moptions for IPv6 is left as NULL, as
-			 * multicast IPv6 support is not handled here */
-			error = ip6_output(m, NULL, NULL,
-			    IP_RAWOUTPUT, NULL, NULL, NULL);
+			error = ip6_output(m, NULL, NULL, 0,
+				&sc->sc_im6o, NULL, NULL);
 		}
 		break;
 #endif
@@ -2527,11 +2527,13 @@ pfsyncintr(void *arg)
 }
 
 static int
-pfsync_multicast_setup(struct pfsync_softc *sc, struct ifnet *ifp,
-    struct in_mfilter *imf)
+pfsync_multicast_setup(struct pfsync_softc *sc, struct ifnet *ifp)
 {
 	struct ip_moptions *imo = &sc->sc_imo;
+	struct ip6_moptions *im6o = &sc->sc_im6o;
 	int error;
+	struct in_mfilter *imf = NULL;
+	struct in6_mfilter *im6f = NULL;
 
 	if (!(ifp->if_flags & IFF_MULTICAST))
 		return (EADDRNOTAVAIL);
@@ -2540,11 +2542,15 @@ pfsync_multicast_setup(struct pfsync_softc *sc, struct ifnet *ifp,
 #ifdef INET
 	case AF_INET:
 	    {
+		imf = ip_mfilter_alloc(M_WAITOK, 0, 0);
 		ip_mfilter_init(&imo->imo_head);
 		imo->imo_multicast_vif = -1;
 		if ((error = in_joingroup(ifp, &((struct sockaddr_in *)&sc->sc_sync_peer)->sin_addr, NULL,
 		    &imf->imf_inm)) != 0)
+		{
+			ip_mfilter_free(imf);
 			return (error);
+		}
 
 		ip_mfilter_insert(&imo->imo_head, imf);
 		imo->imo_multicast_ifp = ifp;
@@ -2553,7 +2559,29 @@ pfsync_multicast_setup(struct pfsync_softc *sc, struct ifnet *ifp,
 		break;
 	    }
 #endif
+#ifdef INET6
+	case AF_INET6:
+	    {
+		if ((error = in6_setscope(&((struct sockaddr_in6 *)&sc->sc_sync_peer)->sin6_addr, ifp, NULL))) {
+			return (error);
+		}
+		im6f = ip6_mfilter_alloc(M_WAITOK, 0, 0);
+		ip6_mfilter_init(&im6o->im6o_head);
+		if ((error = in6_joingroup(ifp, &((struct sockaddr_in6 *)&sc->sc_sync_peer)->sin6_addr, NULL,
+			&(im6f->im6f_in6m), 0)))
+		{
+			ip6_mfilter_free(im6f);
+			return (error);
+		}
+
+		ip6_mfilter_insert(&im6o->im6o_head, im6f);
+		im6o->im6o_multicast_ifp = ifp;
+		im6o->im6o_multicast_hlim = PFSYNC_DFLTTL;
+		im6o->im6o_multicast_loop = 0;
+		break;
+	    }
 	}
+#endif
 
 	return (0);
 }
@@ -2562,7 +2590,9 @@ static void
 pfsync_multicast_cleanup(struct pfsync_softc *sc)
 {
 	struct ip_moptions *imo = &sc->sc_imo;
+	struct ip6_moptions *im6o = &sc->sc_im6o;
 	struct in_mfilter *imf;
+	struct in6_mfilter *im6f;
 
 	while ((imf = ip_mfilter_first(&imo->imo_head)) != NULL) {
 		ip_mfilter_remove(&imo->imo_head, imf);
@@ -2570,6 +2600,13 @@ pfsync_multicast_cleanup(struct pfsync_softc *sc)
 		ip_mfilter_free(imf);
 	}
 	imo->imo_multicast_ifp = NULL;
+
+	while ((im6f = ip6_mfilter_first(&im6o->im6o_head)) != NULL) {
+		ip6_mfilter_remove(&im6o->im6o_head, im6f);
+		in6_leavegroup(im6f->im6f_in6m, NULL);
+		ip6_mfilter_free(im6f);
+	}
+	im6o->im6o_multicast_ifp = NULL;
 }
 
 void
@@ -2589,6 +2626,7 @@ pfsync_detach_ifnet(struct ifnet *ifp)
 		 */
 		ip_mfilter_init(&sc->sc_imo.imo_head);
 		sc->sc_imo.imo_multicast_ifp = NULL;
+		sc->sc_im6o.im6o_multicast_ifp = NULL;
 		sc->sc_sync_if = NULL;
 	}
 
@@ -2619,7 +2657,6 @@ pfsync_pfsyncreq_to_kstatus(struct pfsyncreq *pfsyncr, struct pfsync_kstatus *st
 static int
 pfsync_kstatus_to_softc(struct pfsync_kstatus *status, struct pfsync_softc *sc)
 {
-	struct in_mfilter *imf = NULL;
 	struct ifnet *sifp;
 	int error;
 	int c;
@@ -2642,7 +2679,17 @@ pfsync_kstatus_to_softc(struct pfsync_kstatus *status, struct pfsync_softc *sc)
 			status_sin->sin_family = AF_INET;
 			status_sin->sin_len = sizeof(*status_sin);
 			status_sin->sin_addr.s_addr = htonl(INADDR_PFSYNC_GROUP);
-			imf = ip_mfilter_alloc(M_WAITOK, 0, 0);
+		}
+		break;
+	}
+	case AF_INET6: {
+		struct sockaddr_in6 *status_sin6 = (struct sockaddr_in6*)&(status->syncpeer);
+		if (sifp != NULL &&
+			(IN6_IS_ADDR_UNSPECIFIED(&status_sin6->sin6_addr) ||
+			 IN6_ARE_ADDR_EQUAL(&status_sin6->sin6_addr, &in6addr_linklocal_pfsync_group))) {
+			status_sin6->sin6_family = AF_INET6;
+			status_sin6->sin6_len = sizeof(*status_sin6);
+			status_sin6->sin6_addr = in6addr_linklocal_pfsync_group;
 		}
 		break;
 	}
@@ -2700,14 +2747,16 @@ pfsync_kstatus_to_softc(struct pfsync_kstatus *status, struct pfsync_softc *sc)
 	pfsync_multicast_cleanup(sc);
 
 	if (
-	    (sc->sc_sync_peer.ss_family == AF_INET) &&
+	    ((sc->sc_sync_peer.ss_family == AF_INET) &&
 	    (((struct sockaddr_in *)&sc->sc_sync_peer)->sin_addr.s_addr ==
-		htonl(INADDR_PFSYNC_GROUP))
+		htonl(INADDR_PFSYNC_GROUP))) ||
+	    ((sc->sc_sync_peer.ss_family == AF_INET6) &&
+	     (IN6_ARE_ADDR_EQUAL(&((struct sockaddr_in6 *)&sc->sc_sync_peer)->sin6_addr,
+	        &in6addr_linklocal_pfsync_group)))
 	) {
-		error = pfsync_multicast_setup(sc, sifp, imf);
+		error = pfsync_multicast_setup(sc, sifp);
 		if (error) {
 			if_rele(sifp);
-			ip_mfilter_free(imf);
 			PFSYNC_UNLOCK(sc);
 			return (error);
 		}
