@@ -295,7 +295,7 @@ static int		 pf_create_state(struct pf_krule *, struct pf_krule *,
 			    struct pf_state_key *, struct mbuf *, int,
 			    u_int16_t, u_int16_t, int *, struct pfi_kkif *,
 			    struct pf_kstate **, int, u_int16_t, u_int16_t,
-			    int, struct pf_krule_slist *);
+			    int, struct pf_krule_slist *, struct pf_udp_mapping *);
 static int		 pf_test_fragment(struct pf_krule **, int,
 			    struct pfi_kkif *, struct mbuf *, void *,
 			    struct pf_pdesc *, struct pf_krule **,
@@ -4672,7 +4672,7 @@ pf_test_rule(struct pf_krule **rm, struct pf_kstate **sm, int direction,
 		int action;
 		action = pf_create_state(r, nr, a, pd, nsn, nk, sk, m, off,
 		    sport, dport, &rewrite, kif, sm, tag, bproto_sum, bip_sum,
-		    hdrlen, &match_rules);
+		    hdrlen, &match_rules, udp_mapping);
 		if (action != PF_PASS) {
 			if (action == PF_DROP &&
 			    (r->rule_flag & PFRULE_RETURN))
@@ -4720,7 +4720,8 @@ pf_create_state(struct pf_krule *r, struct pf_krule *nr, struct pf_krule *a,
     struct pf_state_key *sk, struct mbuf *m, int off, u_int16_t sport,
     u_int16_t dport, int *rewrite, struct pfi_kkif *kif, struct pf_kstate **sm,
     int tag, u_int16_t bproto_sum, u_int16_t bip_sum, int hdrlen,
-    struct pf_krule_slist *match_rules)
+    struct pf_krule_slist *match_rules,
+    struct pf_udp_mapping *udp_mapping)
 {
 	struct pf_kstate	*s = NULL;
 	struct pf_ksrc_node	*sn = NULL;
