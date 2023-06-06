@@ -4335,6 +4335,7 @@ pf_test_rule(struct pf_krule **rm, struct pf_kstate **sm, int direction,
 	u_int16_t		 bproto_sum = 0, bip_sum = 0;
 	u_int8_t		 icmptype = 0, icmpcode = 0;
 	struct pf_kanchor_stackframe	anchor_stack[PF_ANCHOR_STACKSIZE];
+	struct pf_udp_mapping	*udp_mapping = NULL;
 
 	PF_RULES_RASSERT();
 
