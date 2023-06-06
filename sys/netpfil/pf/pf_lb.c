@@ -223,6 +223,7 @@ pf_get_sport(sa_family_t af, u_int8_t proto, struct pf_krule *r,
 {
 	struct pf_state_key_cmp	key;
 	struct pf_addr		init_addr;
+	struct pf_srchash	*sh = NULL;
 
 	if (proto == IPPROTO_UDP) {
 		struct pf_udp_endpoint_cmp udp_source;
@@ -238,7 +239,7 @@ pf_get_sport(sa_family_t af, u_int8_t proto, struct pf_krule *r,
 			/* as per pf_map_addr(): */
 			if (*sn == NULL && r->rpool.opts & PF_POOL_STICKYADDR &&
 			    (r->rpool.opts & PF_POOL_TYPEMASK) != PF_POOL_NONE)
-				*sn = pf_find_src_node(saddr, r, af, 0);
+				*sn = pf_find_src_node(saddr, r, af, &sh, 0);
 			return (0);
 		} else {
 			*udp_mapping = pf_udp_mapping_create(af, saddr, sport, &init_addr, 0);
