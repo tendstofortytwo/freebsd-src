@@ -98,6 +98,9 @@ __FBSDID("$FreeBSD$");
 #include "kernemu_dev.h"
 #include "mem.h"
 #include "mevent.h"
+#ifdef BHYVE_SNAPSHOT
+#include "migration.h"
+#endif
 #include "mptbl.h"
 #include "pci_emul.h"
 #include "pci_irq.h"
@@ -231,6 +234,7 @@ usage(int code)
 		"       -p: pin 'vcpu' to 'hostcpu'\n"
 #ifdef BHYVE_SNAPSHOT
 		"       -r: path to checkpoint file\n"
+		"       -R: <host[:port]> the source vm host and port for migration\n"
 #endif
 		"       -S: guest memory cannot be swapped\n"
 		"       -s: <slot,driver,configinfo> PCI slot config\n"
@@ -549,17 +553,31 @@ fbsdrun_addcpu(struct vcpu_info *vi)
 	assert(error == 0);
 }
 
-static int
+static void
 fbsdrun_deletecpu(int vcpu)
 {
+	static pthread_mutex_t resetcpu_mtx = PTHREAD_MUTEX_INITIALIZER;
+	static pthread_cond_t resetcpu_cond = PTHREAD_COND_INITIALIZER;
 
+	pthread_mutex_lock(&resetcpu_mtx);
 	if (!CPU_ISSET(vcpu, &cpumask)) {
 		fprintf(stderr, "Attempting to delete unknown cpu %d\n", vcpu);
 		exit(4);
 	}
 
-	CPU_CLR_ATOMIC(vcpu, &cpumask);
-	return (CPU_EMPTY(&cpumask));
+	CPU_CLR(vcpu, &cpumask);
+
+	if (vcpu != BSP) {
+		pthread_cond_signal(&resetcpu_cond);
+		pthread_mutex_unlock(&resetcpu_mtx);
+		pthread_exit(NULL);
+		/* NOTREACHED */
+	}
+
+	while (!CPU_EMPTY(&cpumask)) {
+		pthread_cond_wait(&resetcpu_cond, &resetcpu_mtx);
+	}
+	pthread_mutex_unlock(&resetcpu_mtx);
 }
 
 static int
@@ -814,9 +832,6 @@ fail:
 	return (VMEXIT_ABORT);
 }
 
-static pthread_mutex_t resetcpu_mtx = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t resetcpu_cond = PTHREAD_COND_INITIALIZER;
-
 static int
 vmexit_suspend(struct vmctx *ctx, struct vcpu *vcpu, struct vm_run *vmrun)
 {
@@ -829,19 +844,6 @@ vmexit_suspend(struct vmctx *ctx, struct vcpu *vcpu, struct vm_run *vmrun)
 	how = vme->u.suspended.how;
 
 	fbsdrun_deletecpu(vcpuid);
-
-	if (vcpuid != BSP) {
-		pthread_mutex_lock(&resetcpu_mtx);
-		pthread_cond_signal(&resetcpu_cond);
-		pthread_mutex_unlock(&resetcpu_mtx);
-		pthread_exit(NULL);
-	}
-
-	pthread_mutex_lock(&resetcpu_mtx);
-	while (!CPU_EMPTY(&cpumask)) {
-		pthread_cond_wait(&resetcpu_cond, &resetcpu_mtx);
-	}
-	pthread_mutex_unlock(&resetcpu_mtx);
 
 	switch (how) {
 	case VM_SUSPEND_RESET:
@@ -926,7 +928,7 @@ vmexit_ipi(struct vmctx *ctx __unused, struct vcpu *vcpu __unused,
 	return (error);
 }
 
-static vmexit_handler_t handler[VM_EXITCODE_MAX] = {
+static const vmexit_handler_t handler[VM_EXITCODE_MAX] = {
 	[VM_EXITCODE_INOUT]  = vmexit_inout,
 	[VM_EXITCODE_INOUT_STR]  = vmexit_inout,
 	[VM_EXITCODE_VMX]    = vmexit_vmx,
@@ -942,6 +944,8 @@ static vmexit_handler_t handler[VM_EXITCODE_MAX] = {
 	[VM_EXITCODE_DEBUG] = vmexit_debug,
 	[VM_EXITCODE_BPT] = vmexit_breakpoint,
 	[VM_EXITCODE_IPI] = vmexit_ipi,
+	[VM_EXITCODE_HLT] = vmexit_hlt,
+	[VM_EXITCODE_PAUSE] = vmexit_pause,
 };
 
 static void
@@ -1008,7 +1012,7 @@ num_vcpus_allowed(struct vmctx *ctx, struct vcpu *vcpu)
 }
 
 static void
-fbsdrun_set_capabilities(struct vcpu *vcpu, bool bsp)
+fbsdrun_set_capabilities(struct vcpu *vcpu)
 {
 	int err, tmp;
 
@@ -1019,8 +1023,6 @@ fbsdrun_set_capabilities(struct vcpu *vcpu, bool bsp)
 			exit(4);
 		}
 		vm_set_capability(vcpu, VM_CAP_HALT_EXIT, 1);
-		if (bsp)
-			handler[VM_EXITCODE_HLT] = vmexit_hlt;
 	}
 
 	if (get_config_bool_default("x86.vmexit_on_pause", false)) {
@@ -1034,8 +1036,6 @@ fbsdrun_set_capabilities(struct vcpu *vcpu, bool bsp)
 			exit(4);
 		}
 		vm_set_capability(vcpu, VM_CAP_PAUSE_EXIT, 1);
-		if (bsp)
-			handler[VM_EXITCODE_PAUSE] = vmexit_pause;
         }
 
 	if (get_config_bool_default("x86.x2apic", false))
@@ -1082,7 +1082,11 @@ do_open(const char *vmname)
 			exit(4);
 		}
 	} else {
+#ifndef BHYVE_SNAPSHOT
 		if (!romboot) {
+#else
+		if (!romboot && !get_config_bool_default("is_migrated", false)) {
+#endif
 			/*
 			 * If the virtual machine was just created then a
 			 * bootrom must be configured to boot it.
@@ -1122,7 +1126,7 @@ spinup_vcpu(struct vcpu_info *vi, bool bsp)
 	int error;
 
 	if (!bsp) {
-		fbsdrun_set_capabilities(vi->vcpu, false);
+		fbsdrun_set_capabilities(vi->vcpu);
 
 		/*
 		 * Enable the 'unrestricted guest' mode for APs.
@@ -1227,9 +1231,11 @@ main(int argc, char *argv[])
 	const char *optstr, *value, *vmname;
 #ifdef BHYVE_SNAPSHOT
 	char *restore_file;
+	char *migration_host;
 	struct restore_state rstate;
 
 	restore_file = NULL;
+	migration_host = NULL;
 #endif
 
 	init_config();
@@ -1237,7 +1243,7 @@ main(int argc, char *argv[])
 	progname = basename(argv[0]);
 
 #ifdef BHYVE_SNAPSHOT
-	optstr = "aehuwxACDHIPSWYk:f:o:p:G:c:s:m:l:K:U:r:";
+	optstr = "aehuwxACDHIPSWYk:f:o:p:G:c:s:m:l:K:U:r:R:";
 #else
 	optstr = "aehuwxACDHIPSWYk:f:o:p:G:c:s:m:l:K:U:";
 #endif
@@ -1293,6 +1299,10 @@ main(int argc, char *argv[])
 #ifdef BHYVE_SNAPSHOT
 		case 'r':
 			restore_file = optarg;
+			break;
+		case 'R':
+			migration_host = optarg;
+			set_config_bool("is_migrated", true);
 			break;
 #endif
 		case 's':
@@ -1418,7 +1428,7 @@ main(int argc, char *argv[])
 		exit(4);
 	}
 
-	fbsdrun_set_capabilities(bsp, true);
+	fbsdrun_set_capabilities(bsp);
 
 	/* Allocate per-VCPU resources. */
 	vcpu_info = calloc(guest_ncpus, sizeof(*vcpu_info));
@@ -1510,38 +1520,51 @@ main(int argc, char *argv[])
 		spinup_vcpu(&vcpu_info[vcpuid], vcpuid == BSP);
 
 #ifdef BHYVE_SNAPSHOT
-	if (restore_file != NULL) {
-		fprintf(stdout, "Pausing pci devs...\r\n");
-		if (vm_pause_user_devs() != 0) {
+	if (restore_file != NULL || migration_host != NULL) {
+		fprintf(stdout, "Pausing pci devs...\n");
+		if (vm_pause_devices() != 0) {
 			fprintf(stderr, "Failed to pause PCI device state.\n");
 			exit(1);
 		}
 
-		fprintf(stdout, "Restoring vm mem...\r\n");
-		if (restore_vm_mem(ctx, &rstate) != 0) {
-			fprintf(stderr, "Failed to restore VM memory.\n");
-			exit(1);
+		if (restore_file != NULL) {
+			fprintf(stdout, "Restoring vm mem...\n");
+			if (restore_vm_mem(ctx, &rstate) != 0) {
+				fprintf(stderr,
+				    "Failed to restore VM memory.\n");
+				exit(1);
+			}
+
+			fprintf(stdout, "Restoring pci devs...\n");
+			if (vm_restore_devices(&rstate) != 0) {
+				fprintf(stderr,
+				    "Failed to restore PCI device state.\n");
+				exit(1);
+			}
+
+			fprintf(stdout, "Restoring kernel structs...\n");
+			if (vm_restore_kern_structs(ctx, &rstate) != 0) {
+				fprintf(stderr,
+				    "Failed to restore kernel structs.\n");
+				exit(1);
+			}
 		}
 
-		fprintf(stdout, "Restoring pci devs...\r\n");
-		if (vm_restore_user_devs(&rstate) != 0) {
-			fprintf(stderr, "Failed to restore PCI device state.\n");
-			exit(1);
+		if (migration_host != NULL) {
+			fprintf(stdout, "Starting the migration process...\n");
+			if (receive_vm_migration(ctx, migration_host) != 0) {
+				fprintf(stderr, "Failed to migrate the vm.\n");
+				exit(1);
+			}
 		}
 
-		fprintf(stdout, "Restoring kernel structs...\r\n");
-		if (vm_restore_kern_structs(ctx, &rstate) != 0) {
-			fprintf(stderr, "Failed to restore kernel structs.\n");
-			exit(1);
-		}
-
-		fprintf(stdout, "Resuming pci devs...\r\n");
-		if (vm_resume_user_devs() != 0) {
+		fprintf(stdout, "Resuming pci devs...\n");
+		if (vm_resume_devices() != 0) {
 			fprintf(stderr, "Failed to resume PCI device state.\n");
 			exit(1);
 		}
 	}
-#endif
+#endif /* BHYVE_SNAPSHOT */
 
 	error = vm_get_register(bsp, VM_REG_GUEST_RIP, &rip);
 	assert(error == 0);
@@ -1609,8 +1632,9 @@ main(int argc, char *argv[])
 #endif
 
 #ifdef BHYVE_SNAPSHOT
-	if (restore_file != NULL) {
+	if (restore_file != NULL)
 		destroy_restore_state(&rstate);
+	if (restore_file != NULL || migration_host != NULL) {
 		if (vm_restore_time(ctx) < 0)
 			err(EX_OSERR, "Unable to restore time");
 
