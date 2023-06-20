@@ -304,7 +304,8 @@ static void	pfsync_timeout(void *);
 static void	pfsync_push(struct pfsync_bucket *);
 static void	pfsync_push_all(struct pfsync_softc *);
 static void	pfsyncintr(void *);
-static int	pfsync_multicast_setup(struct pfsync_softc *, struct ifnet *);
+static int	pfsync_multicast_setup(struct pfsync_softc *, struct ifnet *,
+		    struct in_mfilter *, struct in6_mfilter *);
 static void	pfsync_multicast_cleanup(struct pfsync_softc *);
 static void	pfsync_pointers_init(void);
 static void	pfsync_pointers_uninit(void);
@@ -484,7 +485,9 @@ pfsync_clone_destroy(struct ifnet *ifp)
 	pfsync_drop(sc);
 
 	if_free(ifp);
+	PFSYNC_LOCK(sc);
 	pfsync_multicast_cleanup(sc);
+	PFSYNC_UNLOCK(sc);
 	mtx_destroy(&sc->sc_mtx);
 	mtx_destroy(&sc->sc_bulk_mtx);
 
@@ -932,7 +935,7 @@ pfsync6_input(struct mbuf **mp, int *offp __unused, int proto __unused)
 
 		count = ntohs(subh.count);
 		V_pfsyncstats.pfsyncs_iacts[subh.action] += count;
-		rv = (*pfsync_acts[subh.action])(m, offset, count, flags);
+		rv = (*pfsync_acts[subh.action])(m, offset, count, flags, subh.action);
 		if (rv == -1) {
 			PF_RULES_RUNLOCK();
 			return (IPPROTO_DONE);
@@ -2679,13 +2682,12 @@ pfsyncintr(void *arg)
 }
 
 static int
-pfsync_multicast_setup(struct pfsync_softc *sc, struct ifnet *ifp)
+pfsync_multicast_setup(struct pfsync_softc *sc, struct ifnet *ifp,
+    struct in_mfilter* imf, struct in6_mfilter* im6f)
 {
 	struct ip_moptions *imo = &sc->sc_imo;
 	struct ip6_moptions *im6o = &sc->sc_im6o;
 	int error;
-	struct in_mfilter *imf = NULL;
-	struct in6_mfilter *im6f = NULL;
 	struct sockaddr_in6 *syncpeer_sa6 = NULL;
 
 	if (!(ifp->if_flags & IFF_MULTICAST))
@@ -2695,13 +2697,20 @@ pfsync_multicast_setup(struct pfsync_softc *sc, struct ifnet *ifp)
 #ifdef INET
 	case AF_INET:
 	    {
-		imf = ip_mfilter_alloc(M_WAITOK, 0, 0);
 		ip_mfilter_init(&imo->imo_head);
 		imo->imo_multicast_vif = -1;
-		if ((error = in_joingroup(ifp, &((struct sockaddr_in *)&sc->sc_sync_peer)->sin_addr, NULL,
-		    &imf->imf_inm)) != 0)
+		struct in_addr addr =
+		    ((struct sockaddr_in *)&sc->sc_sync_peer)->sin_addr;
+		/*
+		 * in_joingroup holds a sleepable lock, so sc->sc_mtx
+		 * (non-sleepable) can't be held at the same time.
+		 */
+		PFSYNC_UNLOCK(sc);
+		error = in_joingroup(ifp, &addr, NULL, &imf->imf_inm);
+		PFSYNC_LOCK(sc);
+		((struct sockaddr_in *)&sc->sc_sync_peer)->sin_addr = addr;
+		if (error != 0)
 		{
-			ip_mfilter_free(imf);
 			return (error);
 		}
 
@@ -2716,15 +2725,21 @@ pfsync_multicast_setup(struct pfsync_softc *sc, struct ifnet *ifp)
 	case AF_INET6:
 	    {
 		syncpeer_sa6 = (struct sockaddr_in6 *)&sc->sc_sync_peer;
-		if ((error = in6_setscope(&syncpeer_sa6->sin6_addr, ifp, NULL))) {
+		struct in6_addr addr = syncpeer_sa6->sin6_addr;
+		if ((error = in6_setscope(&addr, ifp, NULL))) {
 			return (error);
 		}
-		im6f = ip6_mfilter_alloc(M_WAITOK, 0, 0);
 		ip6_mfilter_init(&im6o->im6o_head);
-		if ((error = in6_joingroup(ifp, &syncpeer_sa6->sin6_addr, NULL,
-			&(im6f->im6f_in6m), 0)))
+		/*
+		 * in6_joingroup holds a sleepable lock, so sc->sc_mtx
+		 * (non-sleepable) can't be held at the same time.
+		 */
+		PFSYNC_UNLOCK(sc);
+		error = in6_joingroup(ifp, &addr, NULL, &(im6f->im6f_in6m), 0);
+		PFSYNC_LOCK(sc);
+		syncpeer_sa6->sin6_addr = addr;
+		if (error != 0)
 		{
-			ip6_mfilter_free(im6f);
 			return (error);
 		}
 
@@ -2750,14 +2765,26 @@ pfsync_multicast_cleanup(struct pfsync_softc *sc)
 
 	while ((imf = ip_mfilter_first(&imo->imo_head)) != NULL) {
 		ip_mfilter_remove(&imo->imo_head, imf);
+		/*
+		 * in_leavegroup holds a sleepable lock, so sc->sc_mtx
+		 * (non-sleepable) can't be held at the same time.
+		 */
+		PFSYNC_UNLOCK(sc);
 		in_leavegroup(imf->imf_inm, NULL);
+		PFSYNC_LOCK(sc);
 		ip_mfilter_free(imf);
 	}
 	imo->imo_multicast_ifp = NULL;
 
 	while ((im6f = ip6_mfilter_first(&im6o->im6o_head)) != NULL) {
 		ip6_mfilter_remove(&im6o->im6o_head, im6f);
+		/*
+		 * in6_leavegroup holds a sleepable lock, so sc->sc_mtx
+		 * (non-sleepable) can't be held at the same time.
+		 */
+		PFSYNC_UNLOCK(sc);
 		in6_leavegroup(im6f->im6f_in6m, NULL);
+		PFSYNC_LOCK(sc);
 		ip6_mfilter_free(im6f);
 	}
 	im6o->im6o_multicast_ifp = NULL;
@@ -2812,6 +2839,10 @@ static int
 pfsync_kstatus_to_softc(struct pfsync_kstatus *status, struct pfsync_softc *sc)
 {
 	struct ifnet *sifp;
+	struct in_mfilter *imf = NULL;
+	struct in6_mfilter *im6f = NULL;
+	struct sockaddr_in *status_sin;
+	struct sockaddr_in6 *status_sin6;
 	int error;
 	int c;
 
@@ -2826,24 +2857,38 @@ pfsync_kstatus_to_softc(struct pfsync_kstatus *status, struct pfsync_softc *sc)
 	switch (status->syncpeer.ss_family) {
 	case AF_UNSPEC:
 	case AF_INET: {
-		struct sockaddr_in *status_sin = (struct sockaddr_in *)&(status->syncpeer);
-		if (sifp != NULL && (status_sin->sin_addr.s_addr == 0 ||
-					status_sin->sin_addr.s_addr ==
-					    htonl(INADDR_PFSYNC_GROUP))) {
-			status_sin->sin_family = AF_INET;
-			status_sin->sin_len = sizeof(*status_sin);
-			status_sin->sin_addr.s_addr = htonl(INADDR_PFSYNC_GROUP);
+		status_sin = (struct sockaddr_in *)&(status->syncpeer);
+		if (sifp != NULL) {
+			if (status_sin->sin_addr.s_addr == 0 ||
+			    status_sin->sin_addr.s_addr ==
+			    htonl(INADDR_PFSYNC_GROUP)) {
+				status_sin->sin_family = AF_INET;
+				status_sin->sin_len = sizeof(*status_sin);
+				status_sin->sin_addr.s_addr =
+				    htonl(INADDR_PFSYNC_GROUP);
+			}
+
+			if (IN_MULTICAST(ntohl(status_sin->sin_addr.s_addr))) {
+				imf = ip_mfilter_alloc(M_WAITOK, 0, 0);
+			}
 		}
 		break;
 	}
 	case AF_INET6: {
-		struct sockaddr_in6 *status_sin6 = (struct sockaddr_in6*)&(status->syncpeer);
-		if (sifp != NULL &&
-			(IN6_IS_ADDR_UNSPECIFIED(&status_sin6->sin6_addr) ||
-			 IN6_ARE_ADDR_EQUAL(&status_sin6->sin6_addr, &in6addr_linklocal_pfsync_group))) {
-			status_sin6->sin6_family = AF_INET6;
-			status_sin6->sin6_len = sizeof(*status_sin6);
-			status_sin6->sin6_addr = in6addr_linklocal_pfsync_group;
+		status_sin6 = (struct sockaddr_in6*)&(status->syncpeer);
+		if (sifp != NULL) {
+			if (IN6_IS_ADDR_UNSPECIFIED(&status_sin6->sin6_addr) ||
+			    IN6_ARE_ADDR_EQUAL(&status_sin6->sin6_addr,
+				&in6addr_linklocal_pfsync_group)) {
+				status_sin6->sin6_family = AF_INET6;
+				status_sin6->sin6_len = sizeof(*status_sin6);
+				status_sin6->sin6_addr =
+				    in6addr_linklocal_pfsync_group;
+			}
+
+			if (IN6_IS_ADDR_MULTICAST(&status_sin6->sin6_addr)) {
+				im6f = ip6_mfilter_alloc(M_WAITOK, 0, 0);
+			}
 		}
 		break;
 	}
@@ -2882,7 +2927,7 @@ pfsync_kstatus_to_softc(struct pfsync_kstatus *status, struct pfsync_softc *sc)
 		struct sockaddr_in6 *sc_sin = (struct sockaddr_in6 *)&sc->sc_sync_peer;
 		sc_sin->sin6_family = AF_INET6;
 		sc_sin->sin6_len = sizeof(*sc_sin);
-		if(IN6_IS_ADDR_UNSPECIFIED(&status_sin6->sin6_addr)) {
+		if(IN6_IS_ADDR_UNSPECIFIED(&status_sin->sin6_addr)) {
 			sc_sin->sin6_addr = in6addr_linklocal_pfsync_group;
 		} else {
 			sc_sin->sin6_addr = status_sin->sin6_addr;
@@ -2922,16 +2967,20 @@ pfsync_kstatus_to_softc(struct pfsync_kstatus *status, struct pfsync_softc *sc)
 
 	pfsync_multicast_cleanup(sc);
 
-	if (
-	    ((sc->sc_sync_peer.ss_family == AF_INET) &&
-	     IN_MULTICAST(ntohl(((struct sockaddr_in *)&sc->sc_sync_peer)->sin_addr.s_addr))) ||
+	if (((sc->sc_sync_peer.ss_family == AF_INET) &&
+	    IN_MULTICAST(ntohl(((struct sockaddr_in *)
+	        &sc->sc_sync_peer)->sin_addr.s_addr))) ||
 	    ((sc->sc_sync_peer.ss_family == AF_INET6) &&
-	     IN6_IS_ADDR_MULTICAST(&((struct sockaddr_in6*)&sc->sc_sync_peer)->sin6_addr))
-	) {
-		error = pfsync_multicast_setup(sc, sifp);
+	    IN6_IS_ADDR_MULTICAST(&((struct sockaddr_in6*)
+	        &sc->sc_sync_peer)->sin6_addr))) {
+		error = pfsync_multicast_setup(sc, sifp, imf, im6f);
 		if (error) {
 			if_rele(sifp);
 			PFSYNC_UNLOCK(sc);
+			if (imf != NULL)
+				ip_mfilter_free(imf);
+			if (im6f != NULL)
+				ip6_mfilter_free(im6f);
 			return (error);
 		}
 	}
