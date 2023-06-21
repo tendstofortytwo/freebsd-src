@@ -490,9 +490,7 @@ pfsync_clone_destroy(struct ifnet *ifp)
 	pfsync_drop(sc);
 
 	if_free(ifp);
-	PFSYNC_LOCK(sc);
 	pfsync_multicast_cleanup(sc);
-	PFSYNC_UNLOCK(sc);
 	mtx_destroy(&sc->sc_mtx);
 	mtx_destroy(&sc->sc_bulk_mtx);
 
@@ -2705,17 +2703,9 @@ pfsync_multicast_setup(struct pfsync_softc *sc, struct ifnet *ifp,
 	    {
 		ip_mfilter_init(&imo->imo_head);
 		imo->imo_multicast_vif = -1;
-		struct in_addr addr =
-		    ((struct sockaddr_in *)&sc->sc_sync_peer)->sin_addr;
-		/*
-		 * in_joingroup holds a sleepable lock, so sc->sc_mtx
-		 * (non-sleepable) can't be held at the same time.
-		 */
-		PFSYNC_UNLOCK(sc);
-		error = in_joingroup(ifp, &addr, NULL, &imf->imf_inm);
-		PFSYNC_LOCK(sc);
-		((struct sockaddr_in *)&sc->sc_sync_peer)->sin_addr = addr;
-		if (error != 0)
+		if ((error = in_joingroup(ifp,
+		    &(((struct sockaddr_in *)&sc->sc_sync_peer)->sin_addr),
+		    NULL, &imf->imf_inm)) != 0)
 		{
 			return (error);
 		}
@@ -2731,20 +2721,13 @@ pfsync_multicast_setup(struct pfsync_softc *sc, struct ifnet *ifp,
 	case AF_INET6:
 	    {
 		syncpeer_sa6 = (struct sockaddr_in6 *)&sc->sc_sync_peer;
-		struct in6_addr addr = syncpeer_sa6->sin6_addr;
-		if ((error = in6_setscope(&addr, ifp, NULL))) {
+		if ((error = in6_setscope(&syncpeer_sa6->sin6_addr, ifp, NULL)))
+		{
 			return (error);
 		}
 		ip6_mfilter_init(&im6o->im6o_head);
-		/*
-		 * in6_joingroup holds a sleepable lock, so sc->sc_mtx
-		 * (non-sleepable) can't be held at the same time.
-		 */
-		PFSYNC_UNLOCK(sc);
-		error = in6_joingroup(ifp, &addr, NULL, &(im6f->im6f_in6m), 0);
-		PFSYNC_LOCK(sc);
-		syncpeer_sa6->sin6_addr = addr;
-		if (error != 0)
+		if ((error = in6_joingroup(ifp, &syncpeer_sa6->sin6_addr, NULL,
+		    &(im6f->im6f_in6m), 0)) != 0)
 		{
 			return (error);
 		}
@@ -2771,26 +2754,14 @@ pfsync_multicast_cleanup(struct pfsync_softc *sc)
 
 	while ((imf = ip_mfilter_first(&imo->imo_head)) != NULL) {
 		ip_mfilter_remove(&imo->imo_head, imf);
-		/*
-		 * in_leavegroup holds a sleepable lock, so sc->sc_mtx
-		 * (non-sleepable) can't be held at the same time.
-		 */
-		PFSYNC_UNLOCK(sc);
 		in_leavegroup(imf->imf_inm, NULL);
-		PFSYNC_LOCK(sc);
 		ip_mfilter_free(imf);
 	}
 	imo->imo_multicast_ifp = NULL;
 
 	while ((im6f = ip6_mfilter_first(&im6o->im6o_head)) != NULL) {
 		ip6_mfilter_remove(&im6o->im6o_head, im6f);
-		/*
-		 * in6_leavegroup holds a sleepable lock, so sc->sc_mtx
-		 * (non-sleepable) can't be held at the same time.
-		 */
-		PFSYNC_UNLOCK(sc);
 		in6_leavegroup(im6f->im6f_in6m, NULL);
-		PFSYNC_LOCK(sc);
 		ip6_mfilter_free(im6f);
 	}
 	im6o->im6o_multicast_ifp = NULL;
