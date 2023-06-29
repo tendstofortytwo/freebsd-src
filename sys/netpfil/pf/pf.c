@@ -2207,6 +2207,10 @@ pf_unlink_state(struct pf_kstate *s)
 	PF_HASHROW_UNLOCK(ih);
 
 	pf_detach_state(s);
+
+	if (s->udp_mapping)
+		pf_udp_mapping_release(s->udp_mapping);
+	
 	/* pf_state_insert() initialises refs to 2 */
 	return (pf_release_staten(s, 2));
 }
@@ -4675,6 +4679,8 @@ pf_test_rule(struct pf_krule **rm, struct pf_kstate **sm, int direction,
 		    sport, dport, &rewrite, kif, sm, tag, bproto_sum, bip_sum,
 		    hdrlen, &match_rules, udp_mapping);
 		if (action != PF_PASS) {
+			if (udp_mapping != NULL)
+				pf_udp_mapping_release(udp_mapping);
 			if (action == PF_DROP &&
 			    (r->rule_flag & PFRULE_RETURN))
 				pf_return(r, nr, pd, sk, off, m, th, kif,
@@ -4685,6 +4691,8 @@ pf_test_rule(struct pf_krule **rm, struct pf_kstate **sm, int direction,
 	} else {
 		uma_zfree(V_pf_state_key_z, sk);
 		uma_zfree(V_pf_state_key_z, nk);
+		if (udp_mapping != NULL)
+			pf_udp_mapping_release(udp_mapping);
 	}
 
 	/* copy back packet headers if we performed NAT operations */
@@ -4712,6 +4720,10 @@ cleanup:
 
 	uma_zfree(V_pf_state_key_z, sk);
 	uma_zfree(V_pf_state_key_z, nk);
+
+	if (udp_mapping != NULL)
+		pf_udp_mapping_release(udp_mapping);
+
 	return (PF_DROP);
 }
 
