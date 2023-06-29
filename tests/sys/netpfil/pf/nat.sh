@@ -141,10 +141,13 @@ endpoint_independent_body()
 	vnet_mkjail server1 ${epair_server1}a
 	vnet_mkjail server2 ${epair_server2}a
 
+	ifconfig ${epair_server1}b up
+	ifconfig ${epair_server2}b up
+	ifconfig ${epair_nat}b up
 	ifconfig ${bridge} \
 		addm ${epair_server1}b \
 		addm ${epair_server2}b \
-		${epair_nat}b \
+		addm ${epair_nat}b \
 		up
 
 	jexec nat ifconfig ${epair_client}b 192.0.2.1/24 up
@@ -152,25 +155,40 @@ endpoint_independent_body()
 	jexec nat sysctl net.inet.ip.forwarding=1
 
 	jexec client ifconfig ${epair_client}a 192.0.2.2/24 up
+	jexec client route add default 192.0.2.1
+
 	jexec server1 ifconfig ${epair_server1}a 10.32.32.32/8 up
 	jexec server2 ifconfig ${epair_server2}a 10.22.22.22/8 up
 
 	# Enable pf!
 	jexec nat pfctl -e
 	pft_set_rules nat \
-		"nat on ${epair_client}a inet from 192.0.2.0/24 to any -> (${epair_echo}a) sticky-address"
+		"nat on ${epair_nat}a inet from ! (${epair_nat}a) to any -> (${epair_nat}a)" # sticky-address"
 
-	jexec server1 nc -u -l 1234 -v > server1.out &
-	jexec server2 nc -u -l 1234 -v > server2.out &
+	jexec server1 nc -u -l 1234 -v 2> server1.out &
+	server1pid="$!"
+	jexec server2 nc -u -l 1234 -v 2> server2.out &
+	server2pid="$!"
 
-	echo "hi to server1" | jexec client nc -u 10.32.32.32 1234
-	echo "hi to server2" | jexec client nc -u 10.22.22.22 1234
+	echo "hi to server1" | jexec client nc -u 10.32.32.32 1234 -w 1
+	echo "hi to server2" | jexec client nc -u 10.22.22.22 1234 -w 1
 
 	ipport_server1=$(cat server1.out | grep Connection)
 	ipport_server2=$(cat server2.out | grep Connection)
-	if [ ! $ipport_server1 = $ipport_server2 ]; then
+
+	if [ -z "$ipport_server1" ]; then
+		atf_fail server1 did not receive connection from client
+	fi
+
+	if [ -z "$ipport_server2" ]; then
+		atf_fail server2 did not receive connection from client
+	fi
+
+	if [ ! "$ipport_server1" = "$ipport_server2" ]; then
 		atf_fail Received different IP:port on server1 than server2
 	fi
+	kill $server1pid
+	kill $server2pid
 }
 
 endpoint_independent_cleanup()
