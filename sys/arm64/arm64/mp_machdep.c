@@ -274,7 +274,7 @@ init_secondary(uint64_t cpu)
 	cpu_initclocks_ap();
 
 #ifdef VFP
-	vfp_init();
+	vfp_init_secondary();
 #endif
 
 	dbg_init();
@@ -778,6 +778,8 @@ cpu_mp_start(void)
 	CPU_SET(0, &all_cpus);
 	mpidr = READ_SPECIALREG(mpidr_el1) & CPU_AFF_MASK;
 	cpuid_to_pcpu[0]->pc_mpidr = mpidr;
+
+	cpu_desc_init();
 
 	switch(arm64_bus_method) {
 #ifdef DEV_ACPI
