@@ -170,8 +170,8 @@ endpoint_independent_body()
 	jexec server2 nc -u -l 1234 -v 2> server2.out &
 	server2pid="$!"
 
-	echo "hi to server1" | jexec client nc -u 10.32.32.32 1234 -w 1
-	echo "hi to server2" | jexec client nc -u 10.22.22.22 1234 -w 1
+	echo "hi to server1" | jexec client nc -u 10.32.32.32 1234 -p 42420 -w 1
+	echo "hi to server2" | jexec client nc -u 10.22.22.22 1234 -p 42420 -w 1
 
 	ipport_server1=$(cat server1.out | grep Connection)
 	ipport_server2=$(cat server2.out | grep Connection)
