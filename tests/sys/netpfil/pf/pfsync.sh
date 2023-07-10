@@ -721,15 +721,15 @@ basic_ipv6_unicast_body()
 	vnet_mkjail two ${epair_two}a ${epair_sync}b
 
 	# pfsync interface
-	jexec one ifconfig ${epair_sync}a inet6 fd2c::1/64 up
-	jexec one ifconfig ${epair_one}a inet6 fd2b::1/64 up
+	jexec one ifconfig ${epair_sync}a inet6 fd2c::1/64 no_dad up
+	jexec one ifconfig ${epair_one}a inet6 fd2b::1/64 no_dad up
 	jexec one ifconfig pfsync0 \
 		syncdev ${epair_sync}a \
 		syncpeer fd2c::2 \
 		maxupd 1 \
 		up
-	jexec two ifconfig ${epair_two}a inet6 fd2b::2/64 up
-	jexec two ifconfig ${epair_sync}b inet6 fd2c::2/64 up
+	jexec two ifconfig ${epair_two}a inet6 fd2b::2/64 no_dad up
+	jexec two ifconfig ${epair_sync}b inet6 fd2c::2/64 no_dad up
 	jexec two ifconfig pfsync0 \
 		syncdev ${epair_sync}b \
 		syncpeer fd2c::1 \
@@ -746,7 +746,7 @@ basic_ipv6_unicast_body()
 		"block on ${epair_sync}b inet" \
 		"pass out keep state"
 
-	ifconfig ${epair_one}b inet6 fd2b::f0/64 up
+	ifconfig ${epair_one}b inet6 fd2b::f0/64 no_dad up
 
 	ping6 -c 1 -S fd2b::f0 fd2b::1
 
@@ -783,15 +783,15 @@ basic_ipv6_body()
 	vnet_mkjail two ${epair_two}a ${epair_sync}b
 
 	# pfsync interface
-	jexec one ifconfig ${epair_sync}a inet6 fd2c::1/64 up
-	jexec one ifconfig ${epair_one}a inet6 fd2b::1/64 up
+	jexec one ifconfig ${epair_sync}a inet6 fd2c::1/64 no_dad up
+	jexec one ifconfig ${epair_one}a inet6 fd2b::1/64 no_dad up
 	jexec one ifconfig pfsync0 \
 		syncdev ${epair_sync}a \
 		syncpeer ff12::f0 \
 		maxupd 1 \
 		up
-	jexec two ifconfig ${epair_two}a inet6 fd2b::2/64 up
-	jexec two ifconfig ${epair_sync}b inet6 fd2c::2/64 up
+	jexec two ifconfig ${epair_two}a inet6 fd2b::2/64 no_dad up
+	jexec two ifconfig ${epair_sync}b inet6 fd2c::2/64 no_dad up
 	jexec two ifconfig pfsync0 \
 		syncdev ${epair_sync}b \
 		syncpeer ff12::f0 \
@@ -808,7 +808,7 @@ basic_ipv6_body()
 		"block on ${epair_sync}b inet" \
 		"pass out keep state"
 
-	ifconfig ${epair_one}b inet6 fd2b::f0/64 up
+	ifconfig ${epair_one}b inet6 fd2b::f0/64 no_dad up
 
 	ping6 -c 1 -S fd2b::f0 fd2b::1
 
