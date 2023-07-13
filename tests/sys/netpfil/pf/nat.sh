@@ -122,7 +122,7 @@ nested_anchor_cleanup()
 atf_test_case "endpoint_independent" "cleanup"
 endpoint_independent_head()
 {
-	atf_set descr 'Test exhausting the NAT pool'
+	atf_set descr 'Test that a client behind NAT gets the same external IP:port for different servers'
 	atf_set require.user root
 }
 
@@ -163,15 +163,18 @@ endpoint_independent_body()
 	# Enable pf!
 	jexec nat pfctl -e
 	pft_set_rules nat \
-		"nat on ${epair_nat}a inet from ! (${epair_nat}a) to any -> (${epair_nat}a)" # sticky-address"
+		"nat on ${epair_nat}a inet from ! (${epair_nat}a) to any -> (${epair_nat}a)"
 
 	jexec server1 nc -u -l 1234 -v 2> server1.out &
 	server1pid="$!"
 	jexec server2 nc -u -l 1234 -v 2> server2.out &
 	server2pid="$!"
 
-	echo "hi to server1" | jexec client nc -u 10.32.32.32 1234 -p 42420 -w 1
-	echo "hi to server2" | jexec client nc -u 10.22.22.22 1234 -p 42420 -w 1
+	# send out three packets because sometimes one fails to go through
+	for i in $(seq 1 3); do
+		echo "ping" | jexec client nc -u 10.32.32.32 1234 -p 4242 -w 0
+		echo "ping" | jexec client nc -u 10.22.22.22 1234 -p 4242 -w 0
+	done
 
 	ipport_server1=$(cat server1.out | grep Connection)
 	ipport_server2=$(cat server2.out | grep Connection)
@@ -185,6 +188,8 @@ endpoint_independent_body()
 	fi
 
 	if [ ! "$ipport_server1" = "$ipport_server2" ]; then
+		echo "server1: $ipport_server1"
+		echo "server2: $ipport_server2"
 		atf_fail Received different IP:port on server1 than server2
 	fi
 	kill $server1pid
