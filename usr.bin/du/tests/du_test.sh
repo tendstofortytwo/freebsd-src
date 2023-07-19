@@ -177,6 +177,23 @@ si_flag_body()
 	atf_check -o inline:'1.5M\tA\n1.6M\tB\n' du -A --si A B
 }
 
+atf_test_case a_t_flags
+a_t_flags_head()
+{
+	atf_set "descr" "Verify the use of -a and -t together"
+}
+
+a_t_flags_body()
+{
+	mkdir -p testdir/nested
+	cd testdir
+	atf_check truncate -s 2M nested/A
+	atf_check truncate -s 1M nested/B
+
+	atf_check -o inline:'2048\tnested/A\n3073\tnested/\n' \
+	    du -aAt 1536K nested/
+}
+
 atf_init_test_cases()
 {
 	atf_add_test_case A_flag
@@ -187,4 +204,5 @@ atf_init_test_cases()
 	atf_add_test_case k_flag
 	atf_add_test_case m_flag
 	atf_add_test_case si_flag
+	atf_add_test_case a_t_flags
 }
