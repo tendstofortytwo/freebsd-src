@@ -190,7 +190,7 @@ a_t_flags_body()
 	atf_check truncate -s 2M nested/A
 	atf_check truncate -s 1M nested/B
 
-	atf_check -o inline:'2.0M\tnested/A\n3.0M\tnested\n' \
+	atf_check -o inline:'2.0M\tnested/A\n3.0M\tnested/\n' \
 	    du -aAht 1536K nested/
 }
 
